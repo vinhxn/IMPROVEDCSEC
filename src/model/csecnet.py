@@ -15,6 +15,7 @@ from .arch.nonlocal_block_embedded_gaussian import NONLocalBlock2D
 from .basic_loss import *
 from .dconv import ColorDeformConv2d
 from .single_net_basemodel import SingleNetBaseModel
+from .conv_transformer_illu_net import ConvTransformerIlluNet
 
 # Vinh: Residual Block for DeepWBNet
 class ResidualBlock(nn.Module):
@@ -144,9 +145,8 @@ class LitModel(SingleNetBaseModel):
 
 class DeepWBNet(nn.Module):
     def build_illu_net(self):
-        from .bilateralupsamplenet import BilateralUpsampleNet
-
-        return BilateralUpsampleNet(self.opt[BUNET])
+        # Use Convolution-Transformer illumination network for better global context
+        return ConvTransformerIlluNet(opt=self.opt.get('illu_net', None), coeff_dim=12, num_blocks=4)
 
     def backbone_forward(self, net, x):
         low_x = self.down_sampler(x)
