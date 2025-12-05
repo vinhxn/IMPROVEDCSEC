@@ -122,7 +122,8 @@ def main(config):
         callbacks=callbacks,
         check_val_every_n_epoch=opt[VALID_EVERY],
         num_sanity_val_steps=opt[VAL_DEBUG_STEP_NUMS],
-        strategy="ddp_find_unused_parameters_true",
+        #strategy="ddp_find_unused_parameters_true",
+        strategy="auto",#On Windows with a single GPU, "auto" is more compatible
         precision=opt[RUNTIME_PRECISION],
         #amp_backend=opt[AMP_BACKEND],
         #amp_level=opt[AMP_LEVEL],
