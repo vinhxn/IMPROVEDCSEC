@@ -136,8 +136,18 @@ class LitModel(SingleNetBaseModel):
                 for level_guide in v:
                     gs = [F.interpolate(g, max_size) for g in level_guide]
                     final.extend(gs)
-                region_num = final[0].shape[1]
-                final = torch.stack(final).argmax(axis=2).float() / region_num
+                # Ensure all feature tensors have the same channel count before stacking.
+                # Different backbone levels may have different channel sizes; truncate
+                # channels to the minimum channel count to allow stacking.
+                ch_counts = [f.shape[1] for f in final]
+                region_num = min(ch_counts)
+                aligned = []
+                for f in final:
+                    if f.shape[1] != region_num:
+                        aligned.append(f[:, :region_num, ...])
+                    else:
+                        aligned.append(f)
+                final = torch.stack(aligned).argmax(axis=2).float() / region_num
                 torchvision.utils.save_image(final, dirpath / fname)
             else:
                 self.save_img_batch(v, dirpath, fname)

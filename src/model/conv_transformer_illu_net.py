@@ -147,13 +147,25 @@ class ConvTransformerIlluNet(nn.Module):
         self.guide_net = GuideNet(out_channel=1)
         
         # Main backbone: Conv-Transformer for coefficient generation
+        # read pool_size from opt if provided (reduce attention tokens)
+        pool_size = 4
+        try:
+            if isinstance(opt, dict) and "pool_size" in opt and opt["pool_size"]:
+                pool_size = int(opt["pool_size"])
+            # If opt is an omegaconf DictConfig-like, try attribute access
+            elif hasattr(opt, "get") and opt.get("pool_size"):
+                pool_size = int(opt.get("pool_size"))
+        except Exception:
+            pool_size = 4
+
         self.backbone = ConvTransformerBackbone(
             in_channels=3,
             out_channels=coeff_dim,
             num_blocks=num_blocks,
             base_channels=base_channels,
             num_heads=8,
-            mlp_ratio=4.0
+            mlp_ratio=4.0,
+            pool_size=pool_size,
         )
         
         # Bilateral grid and slicing

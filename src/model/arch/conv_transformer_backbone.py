@@ -11,10 +11,10 @@ import torch.nn.functional as F
 class TransformerEncoderBlock(nn.Module):
     """Transformer encoder block with multi-head self-attention and feed-forward network.
 
-    To avoid O(N^2) memory blowups for large spatial maps, this block supports
-    running attention on a pooled (downsampled) spatial map and then upsampling
-    the attention output back to the original resolution. Use `pool_size` to
-    control the downsampling factor (1 = no pooling).
+    Supports optional spatial pooling before attention to reduce token count
+    (controlled by `pool_size`). When `pool_size>1`, attention runs on a
+    pooled spatial map and the attention output is upsampled back to the
+    original resolution.
     """
 
     def __init__(self, dim, num_heads=8, mlp_ratio=4.0, dropout=0.1, pool_size=1):
@@ -128,7 +128,7 @@ class ConvTransformerBlock(nn.Module):
             ConvBlock(channels, channels, kernel_size=3, stride=1, padding=1),
         )
 
-        # Transformer pathway for global context (supports pooled attention)
+        # Transformer pathway for global context
         self.transformer_block = TransformerEncoderBlock(
             dim=channels,
             num_heads=num_heads,
@@ -163,36 +163,28 @@ class ConvTransformerBackbone(nn.Module):
     Backbone combining convolutional and transformer layers for feature extraction
     Suitable as a replacement for HistUNet in illumination network
     """
-
-    def __init__(
-        self,
-        in_channels=3,
-        out_channels=12,
-        num_blocks=4,
-        base_channels=32,
-        num_heads=8,
-        mlp_ratio=4.0,
-        pool_size=4,
-    ):
+    
+    def __init__(self, in_channels=3, out_channels=12, num_blocks=4, 
+                 base_channels=32, num_heads=8, mlp_ratio=4.0, pool_size=1):
         super(ConvTransformerBackbone, self).__init__()
-
+        
         self.in_channels = in_channels
         self.out_channels = out_channels
-
+        
         # Initial convolution
         self.input_conv = ConvBlock(in_channels, base_channels, kernel_size=7, stride=1, padding=3)
-
+        
         # Encoder with Conv-Transformer blocks
         self.encoder_blocks = nn.ModuleList()
         self.downsample = nn.ModuleList()
-
+        
         in_ch = base_channels
         for i in range(num_blocks):
             # Conv-Transformer block (pass pool_size to reduce attention tokens)
             self.encoder_blocks.append(
                 ConvTransformerBlock(in_ch, num_heads=num_heads, mlp_ratio=mlp_ratio, pool_size=pool_size)
             )
-
+            
             # Downsample (skip last)
             if i < num_blocks - 1:
                 out_ch = in_ch * 2
@@ -200,42 +192,41 @@ class ConvTransformerBackbone(nn.Module):
                     nn.Sequential(
                         nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=2, padding=1),
                         nn.BatchNorm2d(out_ch),
-                        nn.ReLU(inplace=True),
+                        nn.ReLU(inplace=True)
                     )
                 )
                 in_ch = out_ch
-
+        
         # Decoder with upsampling
         self.decoder_blocks = nn.ModuleList()
         self.upsample = nn.ModuleList()
-
+        
         decoder_channels = [in_ch // (2 ** i) for i in range(num_blocks)]
-
+        
         for i in range(num_blocks - 1):
             # Upsample
             self.upsample.append(
                 nn.Sequential(
-                    nn.ConvTranspose2d(
-                        decoder_channels[i], decoder_channels[i + 1], kernel_size=4, stride=2, padding=1
-                    ),
-                    nn.BatchNorm2d(decoder_channels[i + 1]),
-                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(decoder_channels[i], decoder_channels[i+1],
+                                     kernel_size=4, stride=2, padding=1),
+                    nn.BatchNorm2d(decoder_channels[i+1]),
+                    nn.ReLU(inplace=True)
                 )
             )
-
+            
             # Conv-Transformer block
             self.decoder_blocks.append(
-                ConvTransformerBlock(decoder_channels[i + 1], num_heads=num_heads, mlp_ratio=mlp_ratio, pool_size=pool_size)
+                ConvTransformerBlock(decoder_channels[i+1], num_heads=num_heads, mlp_ratio=mlp_ratio, pool_size=pool_size)
             )
-
+        
         # Output layer
         self.output_conv = nn.Sequential(
             nn.Conv2d(base_channels, base_channels, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(base_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(base_channels, out_channels, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(base_channels, out_channels, kernel_size=1, stride=1, padding=0)
         )
-
+        
         self.guide_features = []
     
     def forward(self, x):
@@ -247,16 +238,35 @@ class ConvTransformerBackbone(nn.Module):
         """
         # Input processing
         x = self.input_conv(x)
+
+        # Collect guide features (list of levels, each level is a list of tensors)
+        # This is used by higher-level code for visualization / guidance.
+        self.guide_features = []
+        # record initial feature
+        try:
+            self.guide_features.append([x.detach()])
+        except Exception:
+            # if detach not possible, store tensor as-is
+            self.guide_features.append([x])
         
         # Encoder
         encoder_outputs = [x]
         for i, (block, down) in enumerate(zip(self.encoder_blocks[:-1], self.downsample)):
             x = block(x)
             encoder_outputs.append(x)
+            # store this encoder level as a guide feature (single-element list)
+            try:
+                self.guide_features.append([x.detach()])
+            except Exception:
+                self.guide_features.append([x])
             x = down(x)
         
         # Bottleneck
         x = self.encoder_blocks[-1](x)
+        try:
+            self.guide_features.append([x.detach()])
+        except Exception:
+            self.guide_features.append([x])
         
         # Decoder with skip connections
         for i, (up, block) in enumerate(zip(self.upsample, self.decoder_blocks)):
@@ -264,8 +274,13 @@ class ConvTransformerBackbone(nn.Module):
             # Skip connection (match corresponding encoder output)
             x = x + encoder_outputs[-(i+1)]
             x = block(x)
+            # store decoder level as guide feature too
+            try:
+                self.guide_features.append([x.detach()])
+            except Exception:
+                self.guide_features.append([x])
         
         # Output
         x = self.output_conv(x)
-        
+
         return x
