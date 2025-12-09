@@ -12,6 +12,13 @@ dataloader_num_worker: 4
 mode: train
 logger: tb
 
+# Conv-Transformer runtime defaults (can be overridden per-runtime or via CLI)
+conv_transformer:
+    pool_size: 4
+    base_channels: 32
+    num_blocks: 4
+    num_heads: 8
+
 # frequently changed configs:
 num_epoch: 300 #1000
 valid_every: 10 #20 # validate every N EPOCHS

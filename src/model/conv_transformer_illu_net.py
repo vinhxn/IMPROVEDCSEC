@@ -147,23 +147,42 @@ class ConvTransformerIlluNet(nn.Module):
         self.guide_net = GuideNet(out_channel=1)
         
         # Main backbone: Conv-Transformer for coefficient generation
-        # read pool_size from opt if provided (reduce attention tokens)
+        # Read conv_transformer settings from opt if provided (reduce attention tokens)
         pool_size = 4
+        cfg_num_blocks = num_blocks
+        cfg_base_channels = base_channels
+        cfg_num_heads = 8
         try:
-            if isinstance(opt, dict) and "pool_size" in opt and opt["pool_size"]:
-                pool_size = int(opt["pool_size"])
-            # If opt is an omegaconf DictConfig-like, try attribute access
-            elif hasattr(opt, "get") and opt.get("pool_size"):
-                pool_size = int(opt.get("pool_size"))
+            # opt may be a plain dict or an OmegaConf DictConfig
+            if isinstance(opt, dict):
+                ct = opt.get("conv_transformer", {}) if "conv_transformer" in opt else opt
+            else:
+                # try attribute access for nested config
+                ct = getattr(opt, "conv_transformer", None) or opt
+
+            if isinstance(ct, dict):
+                pool_size = int(ct.get("pool_size", pool_size))
+                cfg_num_blocks = int(ct.get("num_blocks", cfg_num_blocks))
+                cfg_base_channels = int(ct.get("base_channels", cfg_base_channels))
+                cfg_num_heads = int(ct.get("num_heads", cfg_num_heads))
+            else:
+                # ct might be a DictConfig with get method
+                try:
+                    pool_size = int(ct.get("pool_size", pool_size))
+                    cfg_num_blocks = int(ct.get("num_blocks", cfg_num_blocks))
+                    cfg_base_channels = int(ct.get("base_channels", cfg_base_channels))
+                    cfg_num_heads = int(ct.get("num_heads", cfg_num_heads))
+                except Exception:
+                    pass
         except Exception:
-            pool_size = 4
+            pass
 
         self.backbone = ConvTransformerBackbone(
             in_channels=3,
             out_channels=coeff_dim,
-            num_blocks=num_blocks,
-            base_channels=base_channels,
-            num_heads=8,
+            num_blocks=cfg_num_blocks,
+            base_channels=cfg_base_channels,
+            num_heads=cfg_num_heads,
             mlp_ratio=4.0,
             pool_size=pool_size,
         )
@@ -171,6 +190,31 @@ class ConvTransformerIlluNet(nn.Module):
         # Bilateral grid and slicing
         self.slice = SliceNode()
         self.apply_coeffs = ApplyCoeffs(coeff_dim=coeff_dim)
+
+        # Refinement head: small conv residual stack to recover high-frequency details
+        class RefinementNet(nn.Module):
+            def __init__(self, in_channels=3, hidden=32, n_blocks=3):
+                super(RefinementNet, self).__init__()
+                layers = [nn.Conv2d(in_channels, hidden, kernel_size=3, padding=1), nn.ReLU(inplace=True)]
+                for _ in range(n_blocks):
+                    layers.append(
+                        nn.Sequential(
+                            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+                            nn.BatchNorm2d(hidden),
+                            nn.ReLU(inplace=True),
+                            nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+                        )
+                    )
+                    layers.append(nn.ReLU(inplace=True))
+                layers.append(nn.Conv2d(hidden, in_channels, kernel_size=1))
+                self.net = nn.Sequential(*layers)
+
+            def forward(self, x):
+                return x + self.net(x)
+
+        # Use resolved base channels for refinement hidden size
+        hidden = min(64, cfg_base_channels)
+        self.refine_net = RefinementNet(in_channels=3, hidden=hidden, n_blocks=2)
     
     def forward(self, lowres, fullres):
         """
@@ -207,5 +251,15 @@ class ConvTransformerIlluNet(nn.Module):
         
         # Apply coefficients to full-resolution input
         out = self.apply_coeffs(coefficients, fullres)
+
+        # Refinement: recover local details lost by coarse coefficient application
+        try:
+            out = self.refine_net(out)
+        except Exception:
+            # if refinement fails for any reason, fallback to raw output
+            pass
+
+        # store illum map
+        self.illu_map = out
         
         return out

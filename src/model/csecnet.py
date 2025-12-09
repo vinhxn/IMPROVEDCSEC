@@ -156,7 +156,9 @@ class LitModel(SingleNetBaseModel):
 class DeepWBNet(nn.Module):
     def build_illu_net(self):
         # Use Convolution-Transformer illumination network for better global context
-        return ConvTransformerIlluNet(opt=self.opt.get('illu_net', None), coeff_dim=12, num_blocks=4)
+        # Pass the full runtime config so ConvTransformerIlluNet can read
+        # top-level `conv_transformer` settings (e.g. pool_size)
+        return ConvTransformerIlluNet(opt=self.opt, coeff_dim=12, num_blocks=4)
 
     def backbone_forward(self, net, x):
         low_x = self.down_sampler(x)

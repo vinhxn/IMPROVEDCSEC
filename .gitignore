@@ -22,3 +22,4 @@
 /src/model
 /test.log
 /train.log
+/tb_logs/csecnet_cseccnntfm.ckpt@lcdp_data.train
